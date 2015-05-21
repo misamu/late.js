@@ -7,29 +7,29 @@
  * when parsed functions are called
  *
  * = Scope identifiers
- * {{#}}				-	Always gives root scope of current template data that is being parsed
- * {{$}}				-	{{each}} block local level scope - this does not seek from parent scope if value is not found
- * {{&}}				-	window scope
+ * {{#}}                -  Always gives root scope of current template data that is being parsed
+ * {{$}}                -  {{each}} block local level scope - this does not seek from parent scope if value is not found
+ * {{&}}                -  window scope
  *
  * = Special cases
- * parenthesis			-	When parenthesis is used inside {{}} tags that part is considered to be function call to
- * 							window scope eg. {{if parseInt(10) === 10}} that would use native parseInt function.
- * 							if template data function is required to be called that is just called without any
- * 							parenthesis and parser sees that it's function and passes whole current scope as argument
+ * parenthesis          -  When parenthesis is used inside {{}} tags that part is considered to be function call to
+ *                         window scope eg. {{if parseInt(10) === 10}} that would use native parseInt function.
+ *                         if template data function is required to be called that is just called without any
+ *                         parenthesis and parser sees that it's function and passes whole current scope as argument
  *
  * = Special tags
- * {{>[function]]}}		-	Void function call
- * {{% [template]]}}	-	Call template inside template with current data context
- * {{if [arguments]}}	-	If clause that can have valid js reserved words (undefined, true, false, null and
- *							empty string) and call to global scope with &, # or has parenthesis.
- *							Valid operands are &&, ||, ===, !==, <= and => so it has to be type checked data.
- * {{else}}				-	Open if clause can have single else inside current if block
- * {{/if}}				-	Closest open if clause
- * {{each}}				-	Iterate given Object through. Valid values are all items in current scope, &, # or
- *							parenthesis function call. Inside scope data can be accessed by object keys or if value is
- *							not Object then	through {{$value}} and there is always {{$index}} that has current index of
- *							iterated data.
- * {{/each}}			-	Closes each block
+ * {{>[function]]}}     -  Void function call
+ * {{% [template]]}}    -  Call template inside template with current data context
+ * {{if [arguments]}}   -  If clause that can have valid js reserved words (undefined, true, false, null and
+ *                          empty string) and call to global scope with &, # or has parenthesis.
+ *                          Valid operands are &&, ||, ===, !==, <= and => so it has to be type checked data.
+ * {{else}}             -  Open if clause can have single else inside current if block
+ * {{/if}}              -  Closest open if clause
+ * {{each}}             -  Iterate given Object through. Valid values are all items in current scope, &, # or
+ *                         parenthesis function call. Inside scope data can be accessed by object keys or if value is
+ *                         not Object then	through {{$value}} and there is always {{$index}} that has current index of
+ *                         iterated data.
+ * {{/each}}            -  Closes each block
  *
  */
 
