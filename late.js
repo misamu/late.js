@@ -1,10 +1,14 @@
 /*!
  * late.js - With-logic templates for JavaScript
  *
+ * Fork of mustache.js - Logic-less {{mustache}} templates with JavaScript
+ * http://github.com/janl/mustache.js
+ *
  * use {{tags}} to write templates
  *
  * Plain text without any special characters is considered to be local context data that can be any valid js type and
  * when parsed functions are called
+ *
  *
  * = Scope identifiers
  * {{#}}                -  Always gives root scope of current template data that is being parsed
@@ -18,7 +22,8 @@
  *                         parenthesis and parser sees that it's function and passes whole current scope as argument
  *
  * = Special tags
- * {{>[function]]}}     -  Void function call
+ * {{> [function]]}}     - Void function call
+ * {{>> [function]]}}    - Function call with return value
  * {{% [template]]}}    -  Call template inside template with current data context
  * {{if [arguments]}}   -  If clause that can have valid js reserved words (undefined, true, false, null and
  *                          empty string) and call to global scope with &, # or has parenthesis.
@@ -33,69 +38,173 @@
  *
  */
 
-(function (global) {
-	var tags,
-		whiteRe = /\s*/,
-		tagRe = /^>|^% |^if |^else|^each |^html |^\//i;
+(function(window) {
+	/**
+	 * Whitespace regexp
+	 * @type {RegExp}
+	 */
+	var whiteRe = /\s*/;
 
-	/*global Element */
+	/**
+	 * Tag list parsed except else and closing / that are special tags that do not have space before closing }}
+	 * @type {string[]}
+	 */
+	var tagReList = ['>', '>>', '%', 'if', 'html', 'each'];
+
+	/**
+	 * RegExp for special tags built from tagReList
+	 * @type {RegExp}
+	 */
+	var tagRe = new RegExp(`^${tagReList.join(' |^')}|^else|^\/`, 'i');
+
+	// Define default tags here so that those can be set visible to object and still have setter/getter
+	var tags = ['{{', '}}'];
+
+	/**
+	 * Token handler for token rendered
+	 * @see Writer.renderTokens
+	 * @type {Object}
+	 */
+	var tokenHandlers = {};
 
 	/**
 	 * Public object of Late templates
 	 * @type {{
-	 * 	TYPE_LOG: number,
+	 * 	TYPE_DEBUG: number,
 	 * 	TYPE_NOTICE: number,
 	 * 	TYPE_ERROR: number,
-	 *	name: string,
-	 *	version: string,
-	 *	debug: boolean,
-	 *	doDebug: (Function|undefined),
-	 *	tags: (Array|undefined),
+	 * 	addTokenHandler: Function,
+	 *	arrayLength: (Function|undefined),
 	 *	clearCache: (Function|undefined),
+	 *	Context: (Context|undefined),
+	 *	doDebug: boolean,
 	 *	escape: (Function|undefined),
 	 *	exists: (Function|undefined),
+	 *	isObject: (Function|undefined),
+	 *	listTemplates: (Function|undefined),
+	 *	name: string,
 	 *	parse: (Function|undefined),
 	 *	render: (Function|undefined),
 	 *	Scanner: (Scanner|undefined),
-	 *	Context: (Context|undefined),
-	 *	Writer: (Writer|undefined),
-	 *	arrayLength: (Function|undefined)
+	 *	tags: (Array|undefined),
+	 *	version: string,
+	 *	Writer: (Writer|undefined)
 	 * }}
 	 */
-	var late = {
-		TYPE_LOG: 0,
-		TYPE_NOTICE: 1,
-		TYPE_ERROR: 2,
-		name: 'Late.js',
-		version: '0.1',
-		debug: true
-	};
+	var late = Object.create(null, /**@lends {late}*/{
+		/**
+		 * Log level
+		 * @type {number}
+		 */
+		TYPE_DEBUG: /**@type {number}*/({
+			value: 0,
+			writable: false
+		}),
+
+		/**
+		 * Log level
+		 * @type {number}
+		 */
+		TYPE_NOTICE: /**@type {number}*/({
+			value: 1,
+			writable: false
+		}),
+
+		/**
+		 * Log level
+		 * @type {number}
+		 */
+		TYPE_ERROR: /**@type {number}*/({
+			value: 2,
+			writable: false
+		}),
+
+		/**
+		 * Library name
+		 * @type {string}
+		 */
+		name: /**@type {string}*/({
+			value: 'Late.js',
+			writable: false
+		}),
+
+		/**
+		 * Library name
+		 * @type {boolean}
+		 */
+		printDebugLevel: /**@type {boolean}*/({
+			value: 1,
+			writable: true
+		}),
+
+		tags: {
+			get: function() {
+				return tags;
+			},
+			set: function(override) {
+				if (!Array.isArray(override) || override.length !== 2) {
+					consoleMessage(`Invalid tags: ${JSON.stringify(override)}`, Late.TYPE_ERROR);
+				}
+
+				tags = override;
+			}
+		},
+
+		/**
+		 * Library name
+		 * @type {string}
+		 */
+		version: /**@type {string}*/({
+			value: '0.2',
+			writable: false
+		})
+	});
 
 	var entityMap = {
-		"&": "&amp;",
-		"<": "&lt;",
-		">": "&gt;",
-		'"': '&quot;',
-		"'": '&#39;',
-		"/": '&#x2F;'
+		"&": `&amp;`,
+		"<": `&lt;`,
+		">": `&gt;`,
+		"'": `&#39;`,
+		"/": `&#x2F;`,
+		"\"": `&quot;`
 	};
+
+	/**
+	 * Write debug
+	 * @param {string} message
+	 * @param {number} [errorLevel=0]
+	 * @param {string} [template]
+	 */
+	function consoleMessage(message, errorLevel, template) {
+		var identify = template ? `[template: ${template}] ` : ``;
+
+		errorLevel = errorLevel || 0;
+
+		if (late.printDebugLevel >= errorLevel) {
+			switch (errorLevel) {
+				case 0:
+					console.log(`Late.js: ${identify}${message}`);
+					break;
+
+				case 1:
+					console.info(`Late.js: ${identify}${message}`);
+					break;
+
+				case 2:
+					console.error(`Late.js: ${identify}${message}`);
+					break;
+			}
+		}
+	}
 
 	function escapeRegExp(string) {
 		return string.replace(/[\-\[\]{}()*+?.,\\\^$|#\s]/g, "\\$&");
 	}
 
 	function escapeHtml(string) {
-		return String(string).replace(/[&<>"'\/]/g, function (s) {
+		return String(string).replace(/[<>"']/g, function(s) {
 			return entityMap[s];
 		});
-	}
-
-	/**
-	 * Debugging
-	 * @param {*} message
-	 */
-	function debug(message) {
-		console.log(message);
 	}
 
 	/**
@@ -114,15 +223,15 @@
 	/**
 	 * Returns `true` if the tail is empty (end of string).
 	 */
-	Scanner.prototype.eos = function () {
-		return this.tail === "";
+	Scanner.prototype.eos = function() {
+		return this.tail === '';
 	};
 
 	/**
 	 * Tries to match the given regular expression at the current position.
 	 * Returns the matched text if it can match, the empty string otherwise.
 	 */
-	Scanner.prototype.scan = function (re) {
+	Scanner.prototype.scan = function(re) {
 		var match = this.tail.match(re);
 
 		if (match === null) {
@@ -143,16 +252,16 @@
 	 * @param {RegExp} re
 	 * @return {string}
 	 */
-	Scanner.prototype.scanUntil = function (re) {
+	Scanner.prototype.scanUntil = function(re) {
 		var index = this.tail.search(re), match;
 
 		switch (index) {
 		case -1:
 			match = this.tail;
-			this.tail = "";
+			this.tail = '';
 			break;
 		case 0:
-			match = "";
+			match = '';
 			break;
 		default:
 			match = this.tail.substring(0, index);
@@ -184,7 +293,7 @@
 	 * Creates a new context using the given view with this context
 	 * as the parent.
 	 */
-	Context.prototype.push = function (view) {
+	Context.prototype.push = function(view) {
 		// Always push most top level Context to next level so Context can be only in two levels
 		return new Context(view, this, this.root);
 	};
@@ -193,47 +302,60 @@
 	 * @param {string} name
 	 * @returns {*}
 	 */
-	Context.prototype.functionCall = function (name) {
+	Context.prototype.functionCall = function(name) {
 		var context = window,
-			args = [], i, namespaces, func, parts;
+			result, negate, args = [], i, namespaces, func, parts, parseArgs, x;
 
-		/*jslint regexp: true*/
-		// Is this global namespace function call
-		parts = name.split(/\((.*)\)/);
+		if (name[0] === '!') {
+			negate = true;
+			name = name.substring(1);
+		}
 
-		parts.splice(1, parts.length - 2).forEach(function(item) {
-			item.split(',').forEach(function(item) {
-				// Check that this is not empty string... requested empty strings have "" or ''
-				if (item !== "") {
-					args.push(this.lookupWithReserved(item));
+		try {
+			/*jslint regexp: true*/
+			// Is this window namespace function call
+			parts = name.split(/\((.*)\)/);
+
+			// If there is more than one item in parameters then take those and iterate through
+			if (parts[1] !== "") {
+				parseArgs = parts[1].split(',');
+				for (x = 0; x < parseArgs.length; x++) {
+					// Check that this is not empty string... requested empty strings have "" or ''
+					if (parseArgs[x] !== "") {
+						args.push(this.lookupWithReserved(parseArgs[x]));
+					}
 				}
-			}.bind(this));
-		}.bind(this));
-
-		name = parts[0];
-		namespaces = name.split(".");
-		func = namespaces.pop();
-
-		for(i = 0; i < namespaces.length; i++) {
-			try {
-				context = context[namespaces[i]];
-			} catch(exp) {
-				throw new Error(exp + " - " + name);
 			}
-		}
 
-		if (context === undefined || context[func] === undefined) {
-			throw new Error("Tried to executeFunctionByName that does not exist. func: " + name + " args: " + args);
-		}
+			name = parts[0];
 
-		return context[func].apply(context, args);
+			// If function call is to the templateData context
+			if (name[0] !== '$' && name[0] !== '#') {
+				namespaces = name.split(".");
+				func = namespaces.pop();
+
+				for (i = 0; i < namespaces.length; i++) {
+					context = context[namespaces[i]];
+				}
+
+				result = context[func].apply(context, args);
+				return (negate) ? !result : result;
+			}
+
+			result = this.lookup(name, args);
+			return (negate) ? !result : result;
+
+		} catch(/*Error*/error) {
+			consoleMessage(`functionCall exception [Name: ${error.name}] [Func: ${name}] [Msg: ${error.message}]`,
+					Late.TYPE_ERROR, this.current);
+		}
 	};
 
 	/**
 	 * Returns the value of the given name in this context, traversing
 	 * up the context hierarchy if the value is absent in this context's view.
 	 */
-	Context.prototype.lookup = function (name) {
+	Context.prototype.lookup = function(name, args) {
 		var firstChar = name[0],
 			cache, value, negate, result, context, names, index, self, skipParents;
 
@@ -244,7 +366,7 @@
 		}
 
 		// Check if just string
-		if (firstChar === "\"" || firstChar === "'") {
+		if (firstChar === '"' || firstChar === "'") {
 			return name.substr(1, name.length - 2);
 		}
 
@@ -257,8 +379,8 @@
 		if (name[0] === '#') {
 			context = this.root;
 			name = name.substr(2);
-			if (name === "") {
-				name = "$";
+			if (name === '') {
+				name = '$';
 			}
 
 		} else if (name[0] === '&') {
@@ -314,7 +436,7 @@
 		}
 
 		if (typeof value === 'function') {
-			value = value.call(self);
+			value = value.apply(self, args || []);
 		} else {
 			if (cache !== false) {
 				cache[name] = value;
@@ -326,37 +448,34 @@
 
 	/**
 	 * Do lookup for given name - validate first some of the javascript reserved words, numbers and then normal lookup
-	 * @this {Writer}
-	 * @param {string|undefined} name
+	 * @param {*} name
 	 * @returns {*}
 	 */
 	Context.prototype.lookupWithReserved = function(name) {
-		var val;
+		switch(name) {
+			case undefined:
+			case 'undefined':
+				return undefined;
 
-		if (name === 'undefined' || name === undefined) {
-			return undefined;
-		}
-		if (name === 'true') {
-			return true;
-		}
-		if (name === 'false') {
-			return false;
-		}
-		if (name === 'null') {
-			return null;
-		}
+			case true:
+			case 'true':
+				return true;
 
-		if ((name[0] === "\"" && name[name.length -1] === "\"") || (name[0] === "'" && name[name.length -1] === "'")) {
-			return name.substr(1, name.length - 2);
-		}
+			case false:
+			case 'false':
+				return false;
 
-		val = parseInt(name, 10);
-
-		if (isNaN(val)) {
-			return this.lookup(name);
+			case null:
+			case 'null':
+				return null;
 		}
 
-		return val;
+		// Check if number
+		if (!isNaN(name)) {
+			return parseInt(name, 10);
+		}
+
+		return this.lookup(name);
 	};
 
 	/**
@@ -438,12 +557,12 @@
 	 * which the closing tag for that section begins.
 	 *
 	 * @private
+	 * @param {string} name
 	 * @param {string} template
 	 */
-	function parseTemplate(template) {
+	function parseTemplate(name, template) {
 		var sections = [],		 // Stack to hold section tokens
 			tokens = [],			 // Buffer to hold the tokens
-			tags = late.tags,
 			start, type, value, token, openSection;
 
 		if (!template) {
@@ -481,42 +600,47 @@
 
 			// Match the closing tag.
 			if (!scanner.scan(closingTagRe)) {
-				throw new Error('Unclosed tag at ' + scanner.pos);
+				consoleMessage(`Unclosed tag at ${scanner.pos}`, Late.TYPE_ERROR, name);
 			}
 
 			token = [type, value.replace(/ /g, ''), start, scanner.pos];
 			tokens.push(token);
 
-			if (type === 'if' || type === 'each') {
-				sections.push(token);
-			} else if (type === '/') {
-				// Check section nesting.
-				openSection = sections.pop();
+			switch(type) {
+				case 'if':
+				case 'each':
+					sections.push(token);
+					break;
 
-				if (!openSection) {
-					debug(tokens);
-					throw new Error('Unopened section "' + value + '" at ' + start);
-				}
+				case '/':
+					// Check section nesting.
+					openSection = sections.pop();
 
-				if (openSection[0] !== value) {
-					debug(tokens);
-					throw new Error('Unclosed section "' + openSection[1] + '" at ' + start);
-				}
+					if (!openSection) {
+						consoleMessage(`Unopened section ${value}:${start}`, Late.TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+					}
 
-			} else if (type === '>') {
-				token[0] = 'voidFunc';
+					if (openSection[0] !== value) {
+						consoleMessage(`Unclosed section ${openSection[1]}:${start}`, Late.TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+					}
+					break;
 
-			} else if (type === 'else') {
-				openSection = sections[sections.length - 1];
+				case 'else':
+					openSection = sections[sections.length - 1];
 
-				if (openSection[0] !== "if") {
-					debug(tokens);
-					throw new Error('Unopened if section for else "' + value + '" at ' + start);
-				}
-			} else {
-				if (value.indexOf('(') !== -1) {
-					token[0] = 'function';
-				}
+					if (openSection[0] !== "if") {
+						consoleMessage(`Unopened if section for else ${value}:${start}`, Late.TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+					}
+					break;
+
+				default:
+					if (tagReList.indexOf(type) !== -1) {
+						token[0] = type;
+					}
+					break;
 			}
 		}
 
@@ -524,7 +648,7 @@
 		openSection = sections.pop();
 
 		if (openSection) {
-			throw new Error('Unclosed section "' + openSection[1] + '" at ' + scanner.pos);
+			consoleMessage(`Unclosed section "${openSection[1]}" at ${scanner.pos}`, Late.TYPE_ERROR, name);
 		}
 
 		return nestTokens(squashTokens(tokens));
@@ -549,7 +673,7 @@
 	/**
 	 * Clears all cached templates in this writer.
 	 */
-	Writer.prototype.clearCache = function () {
+	Writer.prototype.clearCache = function() {
 		this.cache = {};
 	};
 
@@ -557,7 +681,7 @@
 	 * Clears all cached templates in this writer.
 	 * @param {string} name
 	 */
-	Writer.prototype.exists = function (name) {
+	Writer.prototype.exists = function(name) {
 		return this.cache[name] !== undefined;
 	};
 
@@ -566,25 +690,34 @@
 	 * @param {string} name
 	 * @returns {{tokens: Array, template: string}}
 	 */
-	Writer.prototype.getTemplate = function (name) {
+	Writer.prototype.getTemplate = function(name) {
 		if (this.cache[name] === undefined) {
-			throw new Error('Late::getTemplate - Given template name does not exist: ' + name);
+			consoleMessage(`getTemplate - Given template name does not exist: ${name}`, Late.TYPE_ERROR, this.current);
 		}
 
 		return this.cache[name];
 	};
 
+	//noinspection JSUnusedGlobalSymbols
 	/**
 	 * Get tokens of named template
 	 * @param name
 	 * @returns {Array}
 	 */
-	Writer.prototype.getTokens = function (name) {
+	Writer.prototype.getTokens = function(name) {
 		if (this.cache[name] === undefined) {
-			throw new Error('Late::getTokens - Given template name does not exist: ' + name);
+			consoleMessage(`getTokens - Given template name does not exist: ${name}`, Late.TYPE_ERROR, this.current);
 		}
 
 		return this.cache[name].tokens;
+	};
+
+	/**
+	 * Get list of all templates in cache
+	 * @returns {Array}
+	 */
+	Writer.prototype.listTemplates = function() {
+		return Object.keys(this.cache);
 	};
 
 	/**
@@ -598,7 +731,7 @@
 
 		cache = this.cache[name] = {};
 		cache.template = template;
-		cache.tokens = parseTemplate(template);
+		cache.tokens = parseTemplate(name, template);
 	};
 
 	/**
@@ -612,7 +745,7 @@
 	 * @param {string} templateName
 	 * @param {Object|Context} view
 	 */
-	Writer.prototype.render = function (templateName, view) {
+	Writer.prototype.render = function(templateName, view) {
 		var data = this.getTemplate(templateName),
 			context = (view instanceof Context) ? view : new Context(view);
 
@@ -654,8 +787,7 @@
 
 			default:
 				error = "template if clause " + JSON.stringify(parts) + " doesn't have valid (===, !==, >, >=, <, <=)";
-				late.doDebug(error, late.TYPE_ERROR, this.current);
-				throw new Error(error);
+				consoleMessage(error, late.TYPE_ERROR, this.current);
 		}
 	};
 
@@ -671,291 +803,293 @@
 	 * @param {Context} context
 	 * @return {string}
 	 */
-	Writer.prototype.renderTokens = function (tokens, context) {
+	Writer.prototype.renderTokens = function(tokens, context) {
 		var buffer = '',
-			token, value, i, numTokens, j, valueLength, name, parts, apply, x, comp;
+			token, i, handlerResponse;
 
-		for (i = 0, numTokens = tokens.length; i < numTokens; ++i) {
+		var numTokens = tokens.length;
+
+		for (i = 0; i < numTokens; ++i) {
 			token = tokens[i];
 
-			switch (token[0]) {
-				case 'voidFunc':
-					context.functionCall(token[1]);
-					break;
+			// Check if there is token handler registered
+			if (tokenHandlers[token[0]]) {
+				handlerResponse = tokenHandlers[token[0]](token, context, this);
 
-				case 'function':
-					buffer += context.functionCall(token[1]);
-					break;
-
-				case 'if':
-					value = token[4];
-					// Split if clause by && and || tokens
-					parts = token[1].replace(/ /g, "").split(/(&&|\|\|)/);
-
-					for(x = 0; x < parts.length; x++) {
-						if (parts[x] !== '&&' && parts[x] !== '||') {
-							comp = parts[x].split(/(===|!==|==|!=|>=|<=|<|>)/);
-
-							if (comp.length === 1) {
-								parts[x] = !!context.lookup(comp[0]);
-
-							} else {
-								parts[x] = this.handleMultiPartIf(comp, context);
-							}
-
-							if (parts[x - 1] === '&&') {
-								apply = parts[x - 2] && parts[x];
-							} else if (parts[x - 1] === '||') {
-								apply = parts[x - 2] || parts[x];
-
-							} else {
-								apply = parts[x];
-							}
-						}
-					}
-
-					// check if there is else
-					for (j = 0; j < token[4].length; j++) {
-						if (token[4][j][0] === "else") {
-							value = apply ? token[4].slice(0, j) : token[4].slice(j + 1, token[4].length);
-							apply = true;
-							break;
-						}
-					}
-
-					if (apply) {
-						buffer += this.renderTokens(value, context);
-					}
-					break;
-
-				case 'each':
-					value = context.lookup(token[1]);
-
-					if (!value) {
-						break;
-					}
-
-					if (typeof value === 'function') {
-						// Handle function call and push it to value - response handled normally through renderTokens
-						value = value.call(context.view);
-
-						// If response is undefined then pass
-						if (value === undefined) {
-							break;
-						}
-					}
-
-					if (typeof value === 'object') {
-						if (Array.isArray(value)) {
-							for (j = 0, valueLength = value.length; j < valueLength; ++j) {
-								if (typeof value[j] === 'object') {
-									value[j].$index = j;
-									apply = value[j];
-								} else {
-									apply = {"$index": j, "$value": value[j]};
-								}
-
-								buffer += this.renderTokens(token[4],
-										context.push(apply));
-							}
-
-						} else {
-							x = Object.keys(value);
-
-							for (j = 0, valueLength = x.length; j < valueLength; ++j) {
-								if (typeof value[x[j]] === 'object' && value[x[j]] !== null) {
-									value[x[j]].$index = x[j];
-									apply = value[x[j]];
-								} else {
-									apply = {"$index": x[j], "$value": value[x[j]]};
-								}
-
-								buffer += this.renderTokens(token[4],
-										context.push(apply));
-							}
-						}
-
-					} else {
-						buffer += this.renderTokens(token[4], context.push(value));
-					}
-					break;
-
-				case '%':
-					try {
-						value = this.getTemplate(token[1]);
-					} catch (e) {
-						throw new Error('Late::getTokens - Requested inner template name does not exist: ' + token[1]);
-					}
-
-					buffer += this.renderTokens(value.tokens, context);
-					break;
-
-				case 'html':
-					value = context.lookup(token[1]);
-
-					if (value !== undefined) {
-						buffer += value instanceof Element ? value.outerHTML : value;
-					}
-					break;
-
-				case 'name':
-					if (token[1].indexOf('[') > 0) {
-						parts = token[1].split(/\[|\]/);
-						value = context.lookup(parts[0])[context.lookup(parts[1]) || parts[1]];
-
-					} else {
-						value = context.lookup(token[1]);
-					}
-
-					if (value !== null) {
-						buffer += late.escape(value);
-					} else {
-						if (late.debug === true) {
-							late.doDebug(token[1] + ' - named token could not be found from view data',
-									late.TYPE_NOTICE, this.current);
-						}
-					}
-					break;
-
-				case 'text':
-					buffer += token[1];
-					break;
+				// Some response that is not undefined so append to buffer
+				if (handlerResponse !== undefined) {
+					buffer += handlerResponse;
+				}
 			}
 		}
 
 		return buffer;
 	};
 
-	// All high-level mustache.* functions use this writer.
+	// Default writer
 	var defaultWriter = new Writer();
 
-	// Define default tags here so that those can be set visible to object and still have setter/getter
-	tags = ['{{', '}}'];
+	/**
+	 * Void function call
+	 * @param {Array} token
+	 * @param {Context} context
+	 */
+	tokenHandlers['>'] = function(token, context) {
+		context.functionCall(token[1]);
+	};
 
 	/**
-	 * Define default tags and create setter to validate input if overridden
-	 * @memberOf window.Late
-	 * @type {Array}
+	 * Function call
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @return {*}
 	 */
-	late.tags = tags;
+	tokenHandlers['>>'] = function(token, context) {
+		return context.functionCall(token[1]);
+	};
 
-	// Define default properties
-	Object.defineProperties(late, {
-		name: {
-			writable: false
-		},
-		version: {
-			writable: false
-		},
-		tags: {
-			get: function() {
-				return tags;
-			},
-			set: function(override) {
-				if (!Array.isArray(override) || override.length !== 2) {
-					throw new Error('Invalid tags: ' + JSON.stringify(override));
-				}
+	/**
+	 * Inner template
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @param {Writer} writer
+	 * @return {*}
+	 */
+	tokenHandlers['%'] = function(token, context, writer) {
+		var value = writer.getTemplate(token[1]);
 
-				tags = override;
+		if (value === undefined) {
+			consoleMessage(`Inner token handler [%${token[1]}] not found`, Late.TYPE_ERROR, this.current);
+			return;
+		}
+
+		return writer.renderTokens(value.tokens, context);
+	};
+
+	/**
+	 * each loop
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @param {Writer} writer
+	 * @return {*}
+	 */
+	tokenHandlers.each = function(token, context, writer) {
+		var buffer = '',
+			x, apply, valueLength;
+
+		var value = context.lookup(token[1]);
+
+		if (!value) {
+			return;
+		}
+
+		if (typeof value === 'function') {
+			// Handle function call and push it to value - response handled normally through renderTokens
+			value = value.call(context.view);
+
+			// If response is undefined then pass
+			if (value === undefined) {
+				return;
 			}
 		}
-	});
+
+		if (Array.isArray(value)) {
+			for (x = 0, valueLength = value.length; x < valueLength; ++x) {
+				if (typeof value[x] === 'object') {
+					value[x].$index = x;
+					apply = value[x];
+				} else {
+					apply = {"$index": x, "$value": value[x]};
+				}
+
+				buffer += writer.renderTokens(token[4], context.push(apply));
+			}
+
+			return buffer;
+		}
+
+		// this will just give simple way to access object through $ if object comes from for example function
+		return writer.renderTokens(token[4], context.push(value));
+	};
 
 	/**
-	 * Write debug
-	 * @param {string} message
-	 * @param {number} [errorLevel]
-	 * @param {string} [template]
+	 * HTML parsing
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @return {*}
 	 */
-	late.doDebug = function(message, errorLevel, template) {
-		if (late.debug !== false) {
-			var identify = template ? 'Late.js template: ' + template + ' - ': 'Late.js - ';
+	tokenHandlers.html = function(token, context) {
+		var	value = context.lookup(token[1]);
 
-			errorLevel = errorLevel || 0;
+		return value instanceof Element ? value.outerHTML : value;
+	};
 
-			if (late.debug === true || late.debug >= errorLevel) {
-				switch (errorLevel) {
-					case 0:
-						console.log(identify + message);
-						break;
+	/**
+	 * if clause
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @param {Writer} writer
+	 * @return {*}
+	 */
+	tokenHandlers.if = function(token, context, writer) {
+		var x, comp, apply;
 
-					case 1:
-						console.info(identify + message);
-						break;
+		var value = token[4];
 
-					case 2:
-						console.error(identify + message);
-						break;
+		// Split if clause by && and || tokens
+		var parts = token[1].replace(/ /g, "").split(/(&&|\|\|)/);
+
+		for(x = 0; x < parts.length; x++) {
+			if (parts[x] !== '&&' && parts[x] !== '||') {
+				comp = parts[x].split(/(===|!==|==|!=|>=|<=|<|>)/);
+
+				if (comp.length === 1) {
+					parts[x] = !!context.lookup(comp[0]);
+
+				} else {
+					parts[x] = writer.handleMultiPartIf(comp, context);
+				}
+
+				if (parts[x - 1] === '&&') {
+					apply = parts[x - 2] && parts[x];
+					parts[x] = apply;
+
+				} else if (parts[x - 1] === '||') {
+					apply = parts[x - 2] || parts[x];
+					parts[x] = apply;
+
+				} else {
+					apply = parts[x];
 				}
 			}
+		}
+
+		// check if there is else
+		for (x = 0; x < token[4].length; x++) {
+			if (token[4][x][0] === "else") {
+				value = apply ? token[4].slice(0, x) : token[4].slice(x + 1, token[4].length);
+				apply = true;
+				break;
+			}
+		}
+
+		if (apply) {
+			return writer.renderTokens(value, context);
+		}
+	};
+
+	/**
+	 * Name parser
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @return {*}
+	 */
+	tokenHandlers.name = function(token, context) {
+		var parts, value;
+
+		if (token[1].indexOf('[') > 0) {
+			parts = token[1].split(/\[|]/);
+			value = context.lookup(parts[0])[context.lookup(parts[1]) || parts[1]];
+
+		} else {
+			value = context.lookup(token[1]);
+		}
+
+		return late.escape(value);
+	};
+
+	/**
+	 * Plain text
+	 * @param {Array} token
+	 * @return {*}
+	 */
+	tokenHandlers.text = function(token) {
+		return token[1];
+	};
+
+	/**
+	 * Add new token handler
+	 * Added function has access as parameters to token:Array, context:Context and writer:Writer
+	 * @param {string} name
+	 * @param {Function} handler
+	 */
+	late.addTokenHandler = function(name, handler) {
+		if (tagReList.indexOf(name) === -1) {
+			tagReList.push(name);
+			tagRe = new RegExp(`^${tagReList.join(' |^')}|^else|^\/`, 'i');
+			tokenHandlers[name] = handler;
+
+		} else {
+			consoleMessage(`Late::addTokenHandler [${name}] already exists as token handler`, Late.TYPE_ERROR);
 		}
 	};
 
 	/**
 	 * Clears all cached templates in the default writer.
-	 * @function
-	 * @memberOf window.Late
 	 */
-	late.clearCache = function () {
+	late.clearCache = function() {
 		defaultWriter.clearCache();
 	};
 
 	/**
 	 * Does given name template exist in cache
-	 * @function
-	 * @memberOf window.Late
 	 * @param {string} name
 	 * @return {boolean}
 	 */
-	late.exists = function (name) {
+	late.exists = function(name) {
 		return defaultWriter.exists(name);
+	};
+
+	/**
+	 * List all templates
+	 * @returns {Array}
+	 */
+	late.listTemplates = function() {
+		return defaultWriter.listTemplates();
 	};
 
 	/**
 	 * Parses and caches the given template in the default writer and returns the
 	 * array of tokens it contains. Doing this ahead of time avoids the need to
 	 * parse templates on the fly as they are rendered.
-	 * @memberOf window.Late
 	 * @param {string} name
 	 * @param {string} template
 	 * @return {boolean}
 	 */
-	late.parse = function (name, template) {
+	late.parse = function(name, template) {
 		return defaultWriter.parse(name, template);
 	};
 
 	/**
 	 * Renders the `template` with the given `view` and `partials` using the
 	 * default writer.
-	 * @memberOf window.Late
-	 * @function
 	 * @param {string} [name]
 	 * @param {Object} [view]
 	 */
-	late.render = function (name, view) {
+	late.render = function(name, view) {
 		return defaultWriter.render(name, view);
 	};
 
 	/**
 	 * Export the escaping function so that the user may override it.
-	 * @memberOf window.Late
+	 * @function
  	 */
 	late.escape = escapeHtml;
 
 	/**
-	 * @memberOf window.Late
+	 * @function
 	 * @type {Scanner}
 	 */
 	late.Scanner = Scanner;
 
 	/**
-	 * @memberOf window.Late
+	 * @function
 	 * @type {Context}
 	 */
 	late.Context = Context;
 
 	/**
-	 * @memberOf window.Late
+	 * @function
 	 * @type {Writer}
 	 */
 	late.Writer = Writer;
@@ -970,8 +1104,17 @@
 	};
 
 	/**
-	 * Set Late.js public object to global Late namespace
+	 * Check if given data is object
+	 * @param {*} data
+	 * @returns {number|boolean}
 	 */
-	global.Late = late;
+	late.isObject = function(data) {
+		return (typeof data === 'object');
+	};
+
+	/**
+	 * Set Late.js public object to window Late namespace
+	 */
+	window.Late = late;
 }(window));
 
