@@ -1,10 +1,16 @@
 /*!
  * late.js - With-logic templates for JavaScript
+ * https://github.com/misamu/late.js
+ * version 0.3
  *
  * Fork of mustache.js - Logic-less {{mustache}} templates with JavaScript
  * http://github.com/janl/mustache.js
  *
- * use {{tags}} to write templates
+ * Licence: MIT
+ */
+
+/**
+ * Use {{tags}} to write templates
  *
  * Plain text without any special characters is considered to be local context data that can be any valid js type and
  * when parsed functions are called
@@ -12,7 +18,7 @@
  *
  * = Scope identifiers
  * {{#}}                -  Always gives root scope of current template data that is being parsed
- * {{$}}                -  {{each}} block local level scope - this does not seek from parent scope if value is not found
+ * {{$}}                -  {{each}} {{get}} block local level scope - this does not seek from parent scope if value is not found
  * {{&}}                -  window scope
  *
  * = Special cases
@@ -35,139 +41,96 @@
  *                         not Object then	through {{$value}} and there is always {{$index}} that has current index of
  *                         iterated data.
  * {{/each}}            -  Closes each block
+ * {{get}}              -  Get given item value and make it as a new scope. For example function call return value
+ *                         goes to $ and gives easy access to that value
+ * {{/get}}             -  Closes get block
  *
  */
 
+'use strict'; // jshint ignore:line
 (function(window) {
+	/**
+	 * @typedef {Writer} lateWriter
+	 */
+
+	/**
+	 * @typedef {Context} lateContext
+	 */
+
+	/**
+	 * Log level debug
+	 * @type {number}
+	 */
+	const TYPE_DEBUG = 0;
+
+	/**
+	 * Log level error
+	 * @type {number}
+	 */
+	const TYPE_ERROR = 1;
+
 	/**
 	 * Whitespace regexp
 	 * @type {RegExp}
 	 */
-	var whiteRe = /\s*/;
+	const whiteRe = /\s*/;
 
 	/**
 	 * Tag list parsed except else and closing / that are special tags that do not have space before closing }}
 	 * @type {string[]}
 	 */
-	var tagReList = ['>', '>>', '%', 'if', 'html', 'each'];
+	const tagReList = ['>', '>>', '%', 'if', 'html', 'each', 'get', 'promise'];
 
 	/**
 	 * RegExp for special tags built from tagReList
 	 * @type {RegExp}
 	 */
-	var tagRe = new RegExp(`^${tagReList.join(' |^')}|^else|^\/`, 'i');
+	let tagRe = new RegExp(`^${tagReList.join(' |^')}|^else|^\/`, 'i');
 
 	// Define default tags here so that those can be set visible to object and still have setter/getter
-	var tags = ['{{', '}}'];
+	let tags = ['{{', '}}'];
 
 	/**
 	 * Token handler for token rendered
 	 * @see Writer.renderTokens
 	 * @type {Object}
 	 */
-	var tokenHandlers = {};
+	const tokenHandlers = Object.create(null);
 
 	/**
-	 * Public object of Late templates
-	 * @type {{
-	 * 	TYPE_DEBUG: number,
-	 * 	TYPE_NOTICE: number,
-	 * 	TYPE_ERROR: number,
-	 * 	addTokenHandler: Function,
-	 *	arrayLength: (Function|undefined),
-	 *	clearCache: (Function|undefined),
-	 *	Context: (Context|undefined),
-	 *	doDebug: boolean,
-	 *	escape: (Function|undefined),
-	 *	exists: (Function|undefined),
-	 *	isObject: (Function|undefined),
-	 *	listTemplates: (Function|undefined),
-	 *	name: string,
-	 *	parse: (Function|undefined),
-	 *	render: (Function|undefined),
-	 *	Scanner: (Scanner|undefined),
-	 *	tags: (Array|undefined),
-	 *	version: string,
-	 *	Writer: (Writer|undefined)
-	 * }}
+	 * Promise callback print element
+	 * @type {number}
 	 */
-	var late = Object.create(null, /**@lends {late}*/{
-		/**
-		 * Log level
-		 * @type {number}
-		 */
-		TYPE_DEBUG: /**@type {number}*/({
-			value: 0,
-			writable: false
-		}),
+	let promiseElementId = 0;
 
-		/**
-		 * Log level
-		 * @type {number}
-		 */
-		TYPE_NOTICE: /**@type {number}*/({
-			value: 1,
-			writable: false
-		}),
-
-		/**
-		 * Log level
-		 * @type {number}
-		 */
-		TYPE_ERROR: /**@type {number}*/({
-			value: 2,
-			writable: false
-		}),
-
+	/**
+	 * @type {Object}
+	 */
+	const late = Object.create(null, {
 		/**
 		 * Library name
-		 * @type {string}
 		 */
-		name: /**@type {string}*/({
-			value: 'Late.js',
+		name: {
+			value: 'late.js',
 			writable: false
-		}),
-
-		/**
-		 * Library name
-		 * @type {boolean}
-		 */
-		printDebugLevel: /**@type {boolean}*/({
-			value: 1,
-			writable: true
-		}),
-
-		tags: {
-			get: function() {
-				return tags;
-			},
-			set: function(override) {
-				if (!Array.isArray(override) || override.length !== 2) {
-					consoleMessage(`Invalid tags: ${JSON.stringify(override)}`, Late.TYPE_ERROR);
-				}
-
-				tags = override;
-			}
 		},
 
 		/**
 		 * Library name
-		 * @type {string}
 		 */
-		version: /**@type {string}*/({
+		printDebugLevel: {
+			value: 1,
+			writable: true
+		},
+
+		/**
+		 * Library name
+		 */
+		version: {
 			value: '0.2',
 			writable: false
-		})
+		}
 	});
-
-	var entityMap = {
-		"&": `&amp;`,
-		"<": `&lt;`,
-		">": `&gt;`,
-		"'": `&#39;`,
-		"/": `&#x2F;`,
-		"\"": `&quot;`
-	};
 
 	/**
 	 * Write debug
@@ -176,29 +139,34 @@
 	 * @param {string} [template]
 	 */
 	function consoleMessage(message, errorLevel, template) {
-		var identify = template ? `[template: ${template}] ` : ``;
+		const identify = template ? `[template: ${template}] ` : ``;
 
 		errorLevel = errorLevel || 0;
 
 		if (late.printDebugLevel >= errorLevel) {
 			switch (errorLevel) {
 				case 0:
-					console.log(`Late.js: ${identify}${message}`);
+					console.log(`late.js: ${identify}${message}`);
 					break;
 
 				case 1:
-					console.info(`Late.js: ${identify}${message}`);
-					break;
-
-				case 2:
-					console.error(`Late.js: ${identify}${message}`);
+					console.error(`late.js: ${identify}${message}`);
 					break;
 			}
 		}
 	}
 
+	const entityMap = {
+		"&": `&amp;`,
+		"<": `&lt;`,
+		">": `&gt;`,
+		"'": `&#39;`,
+		"/": `&#x2F;`,
+		"\"": `&quot;`
+	};
+
 	function escapeRegExp(string) {
-		return string.replace(/[\-\[\]{}()*+?.,\\\^$|#\s]/g, "\\$&");
+		return string.replace(/[\-\[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
 	}
 
 	function escapeHtml(string) {
@@ -213,7 +181,7 @@
 	 * @constructor
 	 */
 	function Scanner(string) {
-		var fix = string.replace(/ +/g, " ").replace(/\t|\n/g, "");
+		const fix = string.replace(/ +/g, " ").replace(/[\t\n]/g, "");
 
 		this.string = fix;
 		this.tail = fix;
@@ -232,13 +200,13 @@
 	 * Returns the matched text if it can match, the empty string otherwise.
 	 */
 	Scanner.prototype.scan = function(re) {
-		var match = this.tail.match(re);
+		const match = this.tail.match(re);
 
 		if (match === null) {
 			return '';
 		}
 
-		var string = match[0];
+		const string = match[0];
 
 		this.tail = this.tail.substring(string.length);
 		this.pos += string.length;
@@ -253,7 +221,8 @@
 	 * @return {string}
 	 */
 	Scanner.prototype.scanUntil = function(re) {
-		var index = this.tail.search(re), match;
+		const index = this.tail.search(re);
+		let match;
 
 		switch (index) {
 		case -1:
@@ -282,16 +251,37 @@
 	 * @param {Context} [root]
 	 */
 	function Context(view, parentContext, root) {
-		this.view = view === undefined ? {} : view;
-		this.cache = {'$': this.view};
+		/**
+		 * @type {Object}
+		 */
+		this.view = view === undefined ? Object.create(null) : view;
+
+		/**
+		 * @type {Context}
+		 */
 		this.parent = parentContext;
+
+		/**
+		 * @type {Context}
+		 */
 		this.root = root || this;
+
+		this.cache = {'$': this.view};
 		this.window = window;
 	}
 
 	/**
+	 * Set new root context
+	 * @param {Context} context
+	 */
+	Context.prototype.setRoot = function(context) {
+		this.root = (context instanceof Context) ? context : this.root;
+	};
+
+	/**
 	 * Creates a new context using the given view with this context
 	 * as the parent.
+	 * @return {Context}
 	 */
 	Context.prototype.push = function(view) {
 		// Always push most top level Context to next level so Context can be only in two levels
@@ -303,8 +293,7 @@
 	 * @returns {*}
 	 */
 	Context.prototype.functionCall = function(name) {
-		var context = window,
-			result, negate, args = [], i, namespaces, func, parts, parseArgs, x;
+		let result, negate, args = [];
 
 		if (name[0] === '!') {
 			negate = true;
@@ -314,12 +303,13 @@
 		try {
 			/*jslint regexp: true*/
 			// Is this window namespace function call
-			parts = name.split(/\((.*)\)/);
+			let parts = name.split(/\((.*)\)/);
 
 			// If there is more than one item in parameters then take those and iterate through
-			if (parts[1] !== "") {
-				parseArgs = parts[1].split(',');
-				for (x = 0; x < parseArgs.length; x++) {
+			if (parts[1] !== "" && parts[1] !== undefined) {
+				let parseArgs = parts[1].split(',');
+
+				for (let x = 0; x < parseArgs.length; x++) {
 					// Check that this is not empty string... requested empty strings have "" or ''
 					if (parseArgs[x] !== "") {
 						args.push(this.lookupWithReserved(parseArgs[x]));
@@ -331,23 +321,25 @@
 
 			// If function call is to the templateData context
 			if (name[0] !== '$' && name[0] !== '#') {
-				namespaces = name.split(".");
-				func = namespaces.pop();
+				let namespaces = name.split(".");
+				let context = window;
+				let func = namespaces.pop();
 
-				for (i = 0; i < namespaces.length; i++) {
+				for (let i = 0; i < namespaces.length; i++) {
 					context = context[namespaces[i]];
 				}
 
 				result = context[func].apply(context, args);
-				return (negate) ? !result : result;
+
+			} else {
+				result = this.lookup(name, args);
 			}
 
-			result = this.lookup(name, args);
 			return (negate) ? !result : result;
 
 		} catch(/*Error*/error) {
 			consoleMessage(`functionCall exception [Name: ${error.name}] [Func: ${name}] [Msg: ${error.message}]`,
-					Late.TYPE_ERROR, this.current);
+					TYPE_ERROR, this.current);
 		}
 	};
 
@@ -356,8 +348,13 @@
 	 * up the context hierarchy if the value is absent in this context's view.
 	 */
 	Context.prototype.lookup = function(name, args) {
-		var firstChar = name[0],
-			cache, value, negate, result, context, names, index, self, skipParents;
+		let firstChar = name[0],
+			cache, value, negate, context, functionPath;
+
+		// Check first if function because it has own negate system
+		if (name.indexOf('(') !== -1) {
+			return this.functionCall(name);
+		}
 
 		if (firstChar === '!') {
 			negate = true;
@@ -370,20 +367,15 @@
 			return name.substr(1, name.length - 2);
 		}
 
-		if (name.indexOf('(') !== -1) {
-			result = this.functionCall(name);
-			return negate ? !result : result;
-		}
-
 		// If there is # as first character then root context is requested
-		if (name[0] === '#') {
+		if (firstChar === '#') {
 			context = this.root;
 			name = name.substr(2);
 			if (name === '') {
 				name = '$';
 			}
 
-		} else if (name[0] === '&') {
+		} else if (firstChar === '&') {
 			context = {
 				view: window,
 				cache: false
@@ -401,6 +393,8 @@
 		if (cache && cache[name] !== undefined) {
 			value = cache[name];
 		} else {
+			let skipParents;
+
 			// If only current scope has been requested then skip parents and remove indicator
 			if (name[0] === '$' && name[1] === '.') {
 				skipParents = true;
@@ -410,33 +404,43 @@
 			while (context) {
 				// Self handles this context for function calls that have depth in object tree. Otherwise prototype
 				// object calls could have incorrect this context inside function.
-				self = context.view;
+				functionPath = context.view;
 
 				if (name.indexOf('.') > 0) {
+					let index = 0;
+					let names = name.split('.');
+
 					value = context.view;
-					names = name.split('.');
-					index = 0;
 
 					while (value !== undefined && index < names.length) {
 						if (index > 0) {
-							self = self[names[index - 1]];
+							functionPath = functionPath[names[index - 1]];
 						}
+
 						value = value[names[index++]];
 					}
 				} else {
 					value = context.view[name];
 				}
 
-				if (value !== undefined) {
+				// If there is value or should skip parents then bail out
+				if (value !== undefined || skipParents) {
 					break;
 				}
 
-				context = skipParents ? undefined : context.parent;
+				context = context.parent;
+
+				// If parent context was undefined but there is a root then go there and mark that after this get out
+				// because this.root would otherwise generate loop
+				if (context === undefined && this.root !== undefined) {
+					context = this.root;
+					skipParents = true;
+				}
 			}
 		}
 
 		if (typeof value === 'function') {
-			value = value.apply(self, args || []);
+			value = value.apply(functionPath, args || []);
 		} else {
 			if (cache !== false) {
 				cache[name] = value;
@@ -485,7 +489,7 @@
 	 * template that represents the end of that section.
 	 */
 	function nestTokens(tokens) {
-		var nestedTokens = [],
+		let nestedTokens = [],
 			collector = nestedTokens,
 			sections = [],
 			i, numTokens, token, section;
@@ -493,7 +497,7 @@
 		for (i = 0, numTokens = tokens.length; i < numTokens; ++i) {
 			token = tokens[i];
 
-			if (token[0] === 'if' || token[0] === 'each') {
+			if (token[0] === 'if' || token[0] === 'each' || token[0] === 'get' || token[0] === 'promise') {
 				collector.push(token);
 				sections.push(token);
 				collector = token[4] = [];
@@ -514,7 +518,7 @@
 	 * to a single token.
 	 */
 	function squashTokens(tokens) {
-		var squashedTokens = [],
+		let squashedTokens = [],
 			lastToken = [],
 			token, i, numTokens;
 
@@ -561,7 +565,7 @@
 	 * @param {string} template
 	 */
 	function parseTemplate(name, template) {
-		var sections = [],		 // Stack to hold section tokens
+		let sections = [],		 // Stack to hold section tokens
 			tokens = [],			 // Buffer to hold the tokens
 			start, type, value, token, openSection;
 
@@ -569,7 +573,7 @@
 			return [];
 		}
 
-		var openingTagRe = new RegExp(escapeRegExp(tags[0]) + '\\s*'),
+		let openingTagRe = new RegExp(escapeRegExp(tags[0]) + '\\s*'),
 			closingTagRe = new RegExp('\\s*' + escapeRegExp(tags[1])),
 			scanner = new Scanner(template);
 
@@ -600,7 +604,7 @@
 
 			// Match the closing tag.
 			if (!scanner.scan(closingTagRe)) {
-				consoleMessage(`Unclosed tag at ${scanner.pos}`, Late.TYPE_ERROR, name);
+				consoleMessage(`Unclosed tag at ${scanner.pos}`, TYPE_ERROR, name);
 			}
 
 			token = [type, value.replace(/ /g, ''), start, scanner.pos];
@@ -609,6 +613,8 @@
 			switch(type) {
 				case 'if':
 				case 'each':
+				case 'get':
+				case 'promise':
 					sections.push(token);
 					break;
 
@@ -617,13 +623,13 @@
 					openSection = sections.pop();
 
 					if (!openSection) {
-						consoleMessage(`Unopened section ${value}:${start}`, Late.TYPE_ERROR, name);
-						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+						consoleMessage(`Unopened section ${value}:${start}`, TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), TYPE_DEBUG, name);
 					}
 
 					if (openSection[0] !== value) {
-						consoleMessage(`Unclosed section ${openSection[1]}:${start}`, Late.TYPE_ERROR, name);
-						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+						consoleMessage(`Unclosed section ${openSection[1]}:${start}`, TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), TYPE_DEBUG, name);
 					}
 					break;
 
@@ -631,8 +637,8 @@
 					openSection = sections[sections.length - 1];
 
 					if (openSection[0] !== "if") {
-						consoleMessage(`Unopened if section for else ${value}:${start}`, Late.TYPE_ERROR, name);
-						consoleMessage(JSON.stringify(tokens), Late.TYPE_DEBUG, name);
+						consoleMessage(`Unopened if section for else ${value}:${start}`, TYPE_ERROR, name);
+						consoleMessage(JSON.stringify(tokens), TYPE_DEBUG, name);
 					}
 					break;
 
@@ -648,7 +654,7 @@
 		openSection = sections.pop();
 
 		if (openSection) {
-			consoleMessage(`Unclosed section "${openSection[1]}" at ${scanner.pos}`, Late.TYPE_ERROR, name);
+			consoleMessage(`Unclosed section "${openSection[1]}" at ${scanner.pos}`, TYPE_ERROR, name);
 		}
 
 		return nestTokens(squashTokens(tokens));
@@ -659,6 +665,7 @@
 	 * string, given a context. It also maintains a cache of templates to
 	 * avoid the need to parse the same template twice.
 	 * @constructor
+	 * @this {Writer}
 	 */
 	function Writer() {
 		this.current = '';
@@ -667,14 +674,14 @@
 		 * Cached templates
 		 * @type {Object.<{tokens: Array, template: string}|undefined>}
 		 */
-		this.cache = {};
+		this.cache = Object.create(null);
 	}
 
 	/**
 	 * Clears all cached templates in this writer.
 	 */
 	Writer.prototype.clearCache = function() {
-		this.cache = {};
+		this.cache = Object.create(null);
 	};
 
 	/**
@@ -692,7 +699,7 @@
 	 */
 	Writer.prototype.getTemplate = function(name) {
 		if (this.cache[name] === undefined) {
-			consoleMessage(`getTemplate - Given template name does not exist: ${name}`, Late.TYPE_ERROR, this.current);
+			consoleMessage(`getTemplate - Given template name does not exist: ${name}`, TYPE_ERROR, this.current);
 		}
 
 		return this.cache[name];
@@ -706,7 +713,7 @@
 	 */
 	Writer.prototype.getTokens = function(name) {
 		if (this.cache[name] === undefined) {
-			consoleMessage(`getTokens - Given template name does not exist: ${name}`, Late.TYPE_ERROR, this.current);
+			consoleMessage(`getTokens - Given template name does not exist: ${name}`, TYPE_ERROR, this.current);
 		}
 
 		return this.cache[name].tokens;
@@ -727,9 +734,7 @@
 	 * @param {string} template
 	 */
 	Writer.prototype.parse = function(name, template) {
-		var cache;
-
-		cache = this.cache[name] = {};
+		const cache = this.cache[name] = Object.create(null);
 		cache.template = template;
 		cache.tokens = parseTemplate(name, template);
 	};
@@ -746,7 +751,7 @@
 	 * @param {Object|Context} view
 	 */
 	Writer.prototype.render = function(templateName, view) {
-		var data = this.getTemplate(templateName),
+		let data = this.getTemplate(templateName),
 			context = (view instanceof Context) ? view : new Context(view);
 
 		this.current = templateName;
@@ -761,8 +766,6 @@
 	 * @returns {boolean}
 	 */
 	Writer.prototype.handleMultiPartIf = function(parts, context) {
-		var error;
-
 		parts[0] = context.lookupWithReserved(parts[0]);
 		parts[2] = context.lookupWithReserved(parts[2]);
 
@@ -786,8 +789,8 @@
 				return parts[0] <= parts[2];
 
 			default:
-				error = "template if clause " + JSON.stringify(parts) + " doesn't have valid (===, !==, >, >=, <, <=)";
-				consoleMessage(error, late.TYPE_ERROR, this.current);
+				let error = "template if clause " + JSON.stringify(parts) + " doesn't have valid (===, !==, >, >=, <, <=)";
+				consoleMessage(error, TYPE_ERROR, this.current);
 		}
 	};
 
@@ -804,17 +807,16 @@
 	 * @return {string}
 	 */
 	Writer.prototype.renderTokens = function(tokens, context) {
-		var buffer = '',
-			token, i, handlerResponse;
+		let buffer = '';
 
-		var numTokens = tokens.length;
+		const numTokens = tokens.length;
 
-		for (i = 0; i < numTokens; ++i) {
-			token = tokens[i];
+		for (let i = 0; i < numTokens; ++i) {
+			const token = tokens[i];
 
 			// Check if there is token handler registered
 			if (tokenHandlers[token[0]]) {
-				handlerResponse = tokenHandlers[token[0]](token, context, this);
+				let handlerResponse = tokenHandlers[token[0]](token, context, this);
 
 				// Some response that is not undefined so append to buffer
 				if (handlerResponse !== undefined) {
@@ -827,7 +829,7 @@
 	};
 
 	// Default writer
-	var defaultWriter = new Writer();
+	const defaultWriter = new Writer();
 
 	/**
 	 * Void function call
@@ -856,10 +858,16 @@
 	 * @return {*}
 	 */
 	tokenHandlers['%'] = function(token, context, writer) {
-		var value = writer.getTemplate(token[1]);
+		/**
+		 * Check first if template name could come from data set of template and if not then use as is
+		 * @type {string}
+		 */
+		const templateName = context.lookup(token[1]) || token[1];
+
+		const value = writer.getTemplate(templateName);
 
 		if (value === undefined) {
-			consoleMessage(`Inner token handler [%${token[1]}] not found`, Late.TYPE_ERROR, this.current);
+			consoleMessage(`Inner token handler [%${templateName}] not found`, TYPE_ERROR, this.current);
 			return;
 		}
 
@@ -874,10 +882,9 @@
 	 * @return {*}
 	 */
 	tokenHandlers.each = function(token, context, writer) {
-		var buffer = '',
-			x, apply, valueLength;
+		let buffer = '';
 
-		var value = context.lookup(token[1]);
+		let value = context.lookup(token[1]);
 
 		if (!value) {
 			return;
@@ -893,19 +900,87 @@
 			}
 		}
 
-		if (Array.isArray(value)) {
-			for (x = 0, valueLength = value.length; x < valueLength; ++x) {
-				if (typeof value[x] === 'object') {
-					value[x].$index = x;
-					apply = value[x];
-				} else {
-					apply = {"$index": x, "$value": value[x]};
-				}
+		// If Array or object then iterate
+		if (typeof value === 'object') {
+			// Handle Array iteration
+			if (Array.isArray(value)) {
+				for (let x = 0, valueLength = value.length; x < valueLength; ++x) {
+					let apply;
 
-				buffer += writer.renderTokens(token[4], context.push(apply));
+					if (typeof value[x] === 'object') {
+						value[x].$index = x;
+						apply = value[x];
+					} else {
+						apply = {"$index": x, "$value": value[x]};
+					}
+
+					buffer += writer.renderTokens(token[4], context.push(apply));
+				}
+			} else {
+				const keys = Object.keys(value);
+
+				for (let x = 0, valueLength = keys.length; x < valueLength; ++x) {
+					buffer += writer.renderTokens(token[4], context.push({"$index": keys[x], "$value": value[keys[x]]}));
+				}
 			}
 
 			return buffer;
+		}
+
+		// this will just give simple way to access object through $ if object comes from for example function
+		return writer.renderTokens(token[4], context.push(value));
+	};
+
+	/**
+	 * Promise handle and loop all items
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @param {Writer} writer
+	 * @return {*}
+	 */
+	tokenHandlers.promise = function(token, context, writer) {
+		const promise = context.lookup(token[1]);
+
+		if (promise instanceof Promise) {
+			promise.then(function(users) {
+				let buffer = '';
+
+				if (Array.isArray(users)) {
+					for (let x = 0; x < users.length; ++x) {
+						buffer += writer.renderTokens(token[4], context.push(users[x]));
+					}
+
+				} else {
+					buffer += writer.renderTokens(token[4], context.push(users));
+				}
+
+				const container = document.getElementById(`latePromise-${this}`);
+				container.innerHTML = buffer;
+				container.parentNode.replaceChild(document.importNode(container.content, true), container);
+
+			}.bind(promiseElementId)).catch(function(error) {
+				consoleMessage(`late::tokenHandler promise [${token[1]}] exception [${JSON.stringify(error)}]`, TYPE_ERROR);
+			});
+
+			return `<template id="latePromise-${promiseElementId++}"></template>`;
+		}
+
+		consoleMessage(`late::tokenHandler promise [${token[1]}] is not a Promise`, TYPE_ERROR);
+		return '';
+	};
+
+	/**
+	 * Get value block and use it through #
+	 * @param {Array} token
+	 * @param {Context} context
+	 * @param {Writer} writer
+	 * @return {*}
+	 */
+	tokenHandlers.get = function(token, context, writer) {
+		const value = context.lookup(token[1]);
+
+		if (!value) {
+			return;
 		}
 
 		// this will just give simple way to access object through $ if object comes from for example function
@@ -919,7 +994,7 @@
 	 * @return {*}
 	 */
 	tokenHandlers.html = function(token, context) {
-		var	value = context.lookup(token[1]);
+		const value = context.lookup(token[1]);
 
 		return value instanceof Element ? value.outerHTML : value;
 	};
@@ -932,40 +1007,71 @@
 	 * @return {*}
 	 */
 	tokenHandlers.if = function(token, context, writer) {
-		var x, comp, apply;
+		let apply = false;
 
-		var value = token[4];
+		let value = token[4];
 
 		// Split if clause by && and || tokens
-		var parts = token[1].replace(/ /g, "").split(/(&&|\|\|)/);
+		const parts = token[1].replace(/ /g, "").split(/(&&|\|\|)/);
 
-		for(x = 0; x < parts.length; x++) {
-			if (parts[x] !== '&&' && parts[x] !== '||') {
-				comp = parts[x].split(/(===|!==|==|!=|>=|<=|<|>)/);
+		// If there is no AND or OR items in the clause then just do simple check for that value
+		if (parts.length === 1) {
+			let comp = parts[0].split(/(===|!==|==|!=|>=|<=|<|>)/);
 
-				if (comp.length === 1) {
-					parts[x] = !!context.lookup(comp[0]);
+			// Checking just if one value is true or false
+			if (comp.length === 1) {
+				apply = !!context.lookup(comp[0]);
 
-				} else {
-					parts[x] = writer.handleMultiPartIf(comp, context);
-				}
-
-				if (parts[x - 1] === '&&') {
-					apply = parts[x - 2] && parts[x];
-					parts[x] = apply;
-
-				} else if (parts[x - 1] === '||') {
-					apply = parts[x - 2] || parts[x];
-					parts[x] = apply;
-
-				} else {
-					apply = parts[x];
-				}
+			} else {
+				// comparison between two values found
+				apply = writer.handleMultiPartIf(comp, context);
 			}
+
+		} else {
+			let x = 0;
+
+			do {
+				if (parts[x] !== '&&' && parts[x] !== '||') {
+					let comp = parts[x].split(/(===|!==|==|!=|>=|<=|<|>)/);
+
+					if (comp.length === 1) {
+						parts[x] = !!context.lookupWithReserved(comp[0]);
+
+					} else {
+						parts[x] = writer.handleMultiPartIf(comp, context);
+					}
+
+					// Check if previous is && then can parse correct value for this item by AND check
+					if (x !== 0 && parts[x - 1] === '&&') {
+						parts[x] = parts[x - 2] && parts[x];
+					}
+
+					// If there is no more items and last item is true then clause is true
+					if (x === parts.length - 1) {
+						if (parts[x]) {
+							apply = true;
+							break;
+						}
+					}
+
+					x++;
+					continue;
+				}
+
+				// If given position is true and next is or then clause is true
+				if (parts[x - 1] === true && parts[x] === '||') {
+					apply = true;
+					break;
+				}
+
+				// Continue to next item
+				x++;
+
+			} while (x < parts.length);
 		}
 
-		// check if there is else
-		for (x = 0; x < token[4].length; x++) {
+		// Search if else token found and slice correct token set to be returned
+		for (let x = 0; x < token[4].length; x++) {
 			if (token[4][x][0] === "else") {
 				value = apply ? token[4].slice(0, x) : token[4].slice(x + 1, token[4].length);
 				apply = true;
@@ -985,17 +1091,17 @@
 	 * @return {*}
 	 */
 	tokenHandlers.name = function(token, context) {
-		var parts, value;
+		let value;
 
 		if (token[1].indexOf('[') > 0) {
-			parts = token[1].split(/\[|]/);
+			let parts = token[1].split(/[\[\]]/);
 			value = context.lookup(parts[0])[context.lookup(parts[1]) || parts[1]];
 
 		} else {
 			value = context.lookup(token[1]);
 		}
 
-		return late.escape(value);
+		return escapeHtml(value);
 	};
 
 	/**
@@ -1005,6 +1111,23 @@
 	 */
 	tokenHandlers.text = function(token) {
 		return token[1];
+	};
+
+
+	/**
+	 * Set/get tags to parse
+	 */
+	late.tags = {
+		get: function () {
+			return tags;
+		},
+		set: function (override) {
+			if (!Array.isArray(override) || override.length !== 2) {
+				consoleMessage(`Invalid tags: ${JSON.stringify(override)}`, TYPE_ERROR);
+			}
+
+			tags = override;
+		}
 	};
 
 	/**
@@ -1020,7 +1143,7 @@
 			tokenHandlers[name] = handler;
 
 		} else {
-			consoleMessage(`Late::addTokenHandler [${name}] already exists as token handler`, Late.TYPE_ERROR);
+			consoleMessage(`late::addTokenHandler [${name}] already exists as token handler`, TYPE_ERROR);
 		}
 	};
 
@@ -1054,7 +1177,6 @@
 	 * parse templates on the fly as they are rendered.
 	 * @param {string} name
 	 * @param {string} template
-	 * @return {boolean}
 	 */
 	late.parse = function(name, template) {
 		return defaultWriter.parse(name, template);
@@ -1077,30 +1199,22 @@
 	late.escape = escapeHtml;
 
 	/**
-	 * @function
-	 * @type {Scanner}
-	 */
-	late.Scanner = Scanner;
-
-	/**
-	 * @function
-	 * @type {Context}
-	 */
-	late.Context = Context;
-
-	/**
-	 * @function
-	 * @type {Writer}
-	 */
-	late.Writer = Writer;
-
-	/**
 	 * get array length in template where required object comes from function
 	 * @param object
 	 * @returns {number|boolean}
 	 */
 	late.arrayLength = function(object) {
 		return (Array.isArray(object)) ? object.length : false;
+	};
+
+	/**
+	 * Check if given data is object
+	 * @param {*} needle
+	 * @param {Array} haystack
+	 * @returns {boolean}
+	 */
+	late.inArray = function(needle, haystack) {
+		return haystack.indexOf(needle) !== -1;
 	};
 
 	/**
@@ -1113,8 +1227,32 @@
 	};
 
 	/**
-	 * Set Late.js public object to window Late namespace
+	 * Create new context that can be used with addTokenHandler to override data mainly with sub templates
+	 * @param {Object} view
+	 * @param {Context} [parent]
+	 * @param {Context} [root]
+	 * @return {Context}
 	 */
-	window.Late = late;
+	late.newContext = function(view, parent, root) {
+		if (parent === undefined) {
+			return new Context(view, parent, root);
+		}
+
+		/**
+		 * Create new context with view data and parent Context
+		 * @type {Context}
+		 */
+		let context = parent.push(view);
+
+		context.setRoot(root);
+
+		return context;
+	};
+
+	/**
+	 * Set late.js public object to window late namespace
+	 * @global late
+	 */
+	window.late = late;
 }(window));
 
